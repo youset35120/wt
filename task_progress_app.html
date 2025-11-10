@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ระบบแสดงความก้าวหน้างาน (แจ้งเตือน + เหลืออีกกี่วัน)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: "Prompt", sans-serif; background: #f4f6f8; padding: 30px; }
+  .container {
+    max-width: 900px; margin: auto; background: white; padding: 20px;
+    border-radius: 15px; box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+  }
+  h2, h3 { text-align: center; color: #333; }
+  input, button {
+    padding: 8px; margin: 5px; border-radius: 8px; border: 1px solid #ccc;
+  }
+  button {
+    background-color: #007bff; color: white; border: none; cursor: pointer;
+  }
+  button:hover { background-color: #0056b3; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
+  .progress-container { background: #eee; border-radius: 10px; overflow: hidden; }
+  .progress-bar { height: 20px; background: #28a745; color: white; text-align: center; transition: width 0.5s; }
+  img.thumb { width: 60px; height: 40px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 1px solid #ccc; }
+  .logout-btn { background: #dc3545; float: right; }
+  .due-soon { color: #dc3545; font-weight: bold; }
+  #detailModal, #reportModal {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+  }
+  .modal-content {
+    background: white; padding: 20px; border-radius: 15px; text-align: center;
+    max-width: 500px; width: 90%;
+  }
+  .modal-content img { width: 100%; border-radius: 10px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div class="container" id="loginBox">
+  <h2>🔐 เข้าสู่ระบบ</h2>
+  <input type="text" id="username" placeholder="ชื่อผู้ใช้">
+  <input type="password" id="password" placeholder="รหัสผ่าน">
+  <button onclick="login()">เข้าสู่ระบบ</button>
+</div>
+
+<div class="container" id="appBox" style="display:none;">
+  <button class="logout-btn" onclick="logout()">ออกจากระบบ</button>
+  <h2>📊 ระบบแสดงความก้าวหน้างาน</h2>
+  <h3 id="userWelcome"></h3>
+
+  <div id="addSection">
+    <input type="text" id="taskName" placeholder="ชื่องาน">
+    <input type="date" id="startDate">
+    <input type="date" id="endDate">
+    <input type="file" id="taskImage" accept="image/*">
+    <button onclick="addTask()">เพิ่มงาน</button>
+  </div>
+
+  <table id="taskTable">
+    <thead>
+      <tr>
+        <th>รูป</th>
+        <th>ชื่องาน</th>
+        <th>ช่วงเวลา</th>
+        <th>เหลืออีก</th>
+        <th>ความคืบหน้า</th>
+        <th>สถานะ</th>
+        <th>อัปเดต</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div style="text-align:center; margin-top:20px;">
+    <button id="reportBtn" style="display:none;" onclick="openReport()">📈 ดูรายงานทั้งหมด</button>
+  </div>
+</div>
+
+<!-- Modal: ดูรายละเอียด -->
+<div id="detailModal">
+  <div class="modal-content">
+    <h3 id="detailName"></h3>
+    <p>วันที่เริ่ม: <span id="detailStart"></span></p>
+    <p>วันที่สิ้นสุด: <span id="detailEnd"></span></p>
+    <p>เหลืออีก: <span id="detailRemain"></span> วัน</p>
+    <p>ความคืบหน้า: <span id="detailProgress"></span>%</p>
+    <p>สถานะ: <span id="detailStatus"></span></p>
+    <img id="detailImage" src="">
+    <br><br>
+    <button onclick="closeModal()">ปิด</button>
+  </div>
+</div>
+
+<!-- Modal: รายงาน -->
+<div id="reportModal">
+  <div class="modal-content">
+    <h3>📈 รายงานภาพรวมความคืบหน้างานทั้งหมด</h3>
+    <canvas id="reportChart"></canvas>
+    <br>
+    <button onclick="closeReport()">ปิด</button>
+  </div>
+</div>
+
+<script>
+let currentUser = null;
+let users = JSON.parse(localStorage.getItem("users")) || {};
+function saveUsers() { localStorage.setItem("users", JSON.stringify(users)); }
+
+// 🔐 ระบบล็อกอิน
+function login() {
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value.trim();
+  if (!username || !password) return alert("กรุณากรอกชื่อผู้ใช้และรหัสผ่าน");
+  if (!users[username]) users[username] = { password, tasks: [] };
+  else if (users[username].password !== password) return alert("รหัสผ่านไม่ถูกต้อง");
+  currentUser = username;
+  saveUsers();
+  showApp();
+}
+function logout() {
+  currentUser = null;
+  document.getElementById("loginBox").style.display = "block";
+  document.getElementById("appBox").style.display = "none";
+}
+
+// 📅 คำนวณวันและ progress
+function calcProgress(start, end) {
+  const now = new Date();
+  const s = new Date(start);
+  const e = new Date(end);
+  if (now <= s) return 0;
+  if (now >= e) return 100;
+  return Math.round(((now - s) / (e - s)) * 100);
+}
+function daysLeft(end) {
+  const now = new Date();
+  const e = new Date(end);
+  const diff = Math.ceil((e - now) / (1000 * 60 * 60 * 24));
+  return diff;
+}
+function getStatus(p) {
+  if (p === 100) return "✅ เสร็จสิ้น";
+  if (p > 0) return "🟡 กำลังทำ";
+  return "⚪ รอเริ่ม";
+}
+
+// 🧮 แสดงข้อมูลหลัก
+function showApp() {
+  document.getElementById("loginBox").style.display = "none";
+  document.getElementById("appBox").style.display = "block";
+  document.getElementById("userWelcome").textContent = `👋 สวัสดี, ${currentUser}`;
+  document.getElementById("addSection").style.display = (currentUser === "dev") ? "block" : "none";
+  document.getElementById("reportBtn").style.display = (currentUser === "dev") ? "inline-block" : "none";
+  renderTable();
+  if (currentUser === "dev") checkDueSoon();
+}
+
+// 🧮 แสดงตาราง
+function renderTable() {
+  const tbody = document.querySelector("#taskTable tbody");
+  tbody.innerHTML = "";
+  const tasks = users[currentUser].tasks;
+
+  tasks.forEach((task, index) => {
+    const progress = calcProgress(task.start, task.end);
+    const remain = daysLeft(task.end);
+    task.progress = progress;
+    const dueClass = (remain <= 3 && progress < 100) ? "due-soon" : "";
+    const dueText = (remain > 0) ? `${remain} วัน` : (progress < 100 ? "ครบกำหนด!" : "-");
+
+    const row = document.createElement("tr");
+    const imgSrc = task.image ? task.image : "";
+    row.innerHTML = `
+      <td>${imgSrc ? `<img src="${imgSrc}" class="thumb" onclick="openModal(${index})">` : "-"}</td>
+      <td>${task.name}</td>
+      <td>${task.start} → ${task.end}</td>
+      <td class="${dueClass}">${dueText}</td>
+      <td>
+        <div class="progress-container">
+          <div class="progress-bar" style="width:${progress}%;">${progress}%</div>
+        </div>
+      </td>
+      <td>${getStatus(progress)}</td>
+      <td>${currentUser === "dev" ? `<button onclick="openModal(${index})">ดู</button>` : "-"}</td>
+    `;
+    tbody.appendChild(row);
+  });
+  saveUsers();
+}
+
+// 🧮 เพิ่มงานใหม่
+function addTask() {
+  const name = document.getElementById("taskName").value.trim();
+  const start = document.getElementById("startDate").value;
+  const end = document.getElementById("endDate").value;
+  const file = document.getElementById("taskImage").files[0];
+  if (!name || !start || !end) return alert("กรุณากรอกข้อมูลให้ครบ");
+
+  const handleSave = (imgData=null) => {
+    users[currentUser].tasks.push({ name, start, end, image: imgData });
+    saveUsers(); renderTable();
+    document.getElementById("taskName").value = "";
+    document.getElementById("startDate").value = "";
+    document.getElementById("endDate").value = "";
+    document.getElementById("taskImage").value = "";
+  };
+
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = e => handleSave(e.target.result);
+    reader.readAsDataURL(file);
+  } else handleSave();
+}
+
+// 🔔 ตรวจงานใกล้ครบกำหนด
+function checkDueSoon() {
+  const tasks = users[currentUser].tasks;
+  const dueSoon = tasks.filter(t => daysLeft(t.end) <= 3 && daysLeft(t.end) >= 0 && calcProgress(t.start, t.end) < 100);
+  if (dueSoon.length > 0) {
+    alert(`🔔 แจ้งเตือน: มี ${dueSoon.length} งานใกล้ครบกำหนด!\n${dueSoon.map(t => "• " + t.name).join("\n")}`);
+  }
+}
+
+// 🔍 ดูรายละเอียด
+function openModal(index) {
+  const task = users[currentUser].tasks[index];
+  const progress = calcProgress(task.start, task.end);
+  document.getElementById("detailName").textContent = task.name;
+  document.getElementById("detailStart").textContent = task.start;
+  document.getElementById("detailEnd").textContent = task.end;
+  document.getElementById("detailRemain").textContent = daysLeft(task.end);
+  document.getElementById("detailProgress").textContent = progress;
+  document.getElementById("detailStatus").textContent = getStatus(progress);
+  document.getElementById("detailImage").src = task.image || "";
+  document.getElementById("detailModal").style.display = "flex";
+}
+function closeModal() { document.getElementById("detailModal").style.display = "none"; }
+
+// 📈 รายงานรวม (dev)
+function openReport() {
+  const tasks = users[currentUser].tasks;
+  const labels = tasks.map(t => t.name);
+  const data = tasks.map(t => calcProgress(t.start, t.end));
+  const ctx = document.getElementById("reportChart").getContext("2d");
+  if (window.reportChart) window.reportChart.destroy();
+  window.reportChart = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets: [{ label: "ความคืบหน้า (%)", data }] },
+    options: { scales: { y: { beginAtZero: true, max: 100 } } }
+  });
+  document.getElementById("reportModal").style.display = "flex";
+}
+function closeReport() { document.getElementById("reportModal").style.display = "none"; }
+</script>
+<script src="https://cdn.emailjs.com/sdk/3.2/email.min.js"></script>
+<script>
+  emailjs.init('YOUR_PUBLIC_KEY');
+  function sendEmailNotifications(tasks){
+    const msg = tasks.map(t => `${t.name} เหลือ ${daysLeft(t.end)} วัน`).join('\n');
+    emailjs.send('YOUR_SERVICE_ID','YOUR_TEMPLATE_ID',{message: msg})
+      .then(()=>alert('ส่งอีเมลแล้ว ✅'))
+      .catch(e=>alert('ส่งไม่สำเร็จ: '+e));
+  }
+</script>
+
+</body>
+</html>
